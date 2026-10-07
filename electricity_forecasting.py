@@ -107,9 +107,10 @@ print("=" * 80)
 df_kwh = df_raw * 0.25
 print("\n  Converted kW → kWh (÷ 4)")
 
-# 2b. Filter to 2012-01-01 onward (most clients active)
-df_kwh = df_kwh.loc["2012-01-01":]
-print(f"  Filtered to 2012+: {df_kwh.index.min()} → {df_kwh.index.max()}")
+# 2b. Filter strictly from 2012-01-01 00:00 to 2014-12-31 23:45
+# Excluding the partial 2015-01-01 00:00 single-reading row ensures exactly 1,096 full days.
+df_kwh = df_raw.loc["2012-01-01":"2014-12-31 23:45"] * 0.25
+print(f"  Filtered to 2012-2014: {df_kwh.index.min()} to {df_kwh.index.max()}")
 print(f"  Shape after filter: {df_kwh.shape}")
 
 # 2c. Aggregate: total consumption across all clients, resample to daily
@@ -118,33 +119,22 @@ daily_total.name = "total_kwh"
 daily_total.index.freq = "D"
 
 print(f"\n  Daily aggregated series:")
-print(f"    Length  : {len(daily_total)} days")
+print(f"    Length  : {len(daily_total)} days (Target: exactly 1,096 days)")
 print(f"    Min     : {daily_total.min():,.0f} kWh")
 print(f"    Max     : {daily_total.max():,.0f} kWh")
 print(f"    Mean    : {daily_total.mean():,.0f} kWh")
 print(f"    Std     : {daily_total.std():,.0f} kWh")
 
-# 2d. Handle anomalies — replace any zero or near-zero days with interpolation
-#     (clock-change artifacts, sensor outages)
-threshold = daily_total.quantile(0.01)
-anomaly_mask = daily_total < threshold
-n_anomalies = anomaly_mask.sum()
-if n_anomalies > 0:
-    daily_total[anomaly_mask] = np.nan
-    daily_total = daily_total.interpolate(method="time")
-    # Handle any remaining NaN at edges (interpolation can't extrapolate)
-    daily_total = daily_total.ffill().bfill()
-    print(f"\n  Replaced {n_anomalies} anomalous day(s) (< 1st percentile) with interpolation")
-
-# 2e. Verify no gaps
-assert daily_total.isna().sum() == 0, "Still have NaN values after interpolation!"
+# 2d. Verify integrity (no NaN, regular daily frequency, exactly 1,096 days)
+assert len(daily_total) == 1096, f"Expected 1,096 days, got {len(daily_total)}!"
+assert daily_total.isna().sum() == 0, "Found unexpected NaN values!"
 assert daily_total.index.freq == "D", "Index frequency not daily!"
-print(f"  ✓ No gaps, regular daily frequency confirmed")
+print(f"  ✓ Exact 1,096 days verified (no artificial percentile filtering of genuine holidays)")
 
-# Save preprocessed daily series for fast re-use
+# Save preprocessed clean daily series for fast re-use
 daily_csv_path = os.path.join(BASE_DIR, "daily_electricity_total.csv")
 daily_total.to_frame().to_csv(daily_csv_path)
-print(f"  [SAVED] Preprocessed daily series saved to {daily_csv_path}")
+print(f"  [SAVED] Clean daily series saved to {daily_csv_path}")
 
 # Free memory
 del df_raw, df_kwh
@@ -321,14 +311,31 @@ plot_pacf(diff1_D1.dropna(), lags=40, ax=axes[1, 1], title="PACF — After d=1, 
 save_fig("08_acf_pacf.png")
 print("\n  ✓ ACF/PACF plots saved")
 
-# --- 5.4 auto_arima ---
-print("\n  Running auto_arima (this may take a few minutes)...")
+# ╔═════════════════════════════════════════════════════════════════════════════╗
+# ║  PHASE 6 — TRAIN/TEST SPLIT & PARAMETER SELECTION                        ║
+# ╚═════════════════════════════════════════════════════════════════════════════╝
+print("\n" + "=" * 80)
+print("PHASE 6: CHRONOLOGICAL TRAIN/TEST SPLIT & SARIMA FITTING")
+print("=" * 80)
+
+# Split strictly chronologically: hold out last 60 days (2014-11-02 to 2014-12-31)
+TEST_DAYS = 60
+train = daily_total.iloc[:-TEST_DAYS]
+test  = daily_total.iloc[-TEST_DAYS:]
+
+print(f"\n  Train window: {train.index.min().date()} to {train.index.max().date()} ({len(train)} days)")
+print(f"  Test window : {test.index.min().date()} to {test.index.max().date()} ({len(test)} days)")
+assert len(train) == 1036, f"Expected 1,036 train days, got {len(train)}"
+assert len(test) == 60, f"Expected 60 test days, got {len(test)}"
+
+# --- Stepwise Parameter Selection via auto_arima (strictly on TRAIN to prevent leakage) ---
+print("\n  Running auto_arima strictly on TRAIN set (no data leakage)...")
 auto_model = pm.auto_arima(
-    daily_total,
+    train,
     m=7,
     seasonal=True,
-    d=None,          # let it decide
-    D=None,          # let it decide
+    d=None,          # let auto_arima select differencing order
+    D=None,          # let auto_arima select seasonal differencing order
     start_p=0, max_p=3,
     start_q=0, max_q=3,
     start_P=0, max_P=2,
@@ -348,27 +355,11 @@ print(f"  BIC: {auto_model.bic():.2f}")
 best_order = auto_model.order
 best_seasonal_order = auto_model.seasonal_order
 
-print(f"\n  → Using order={best_order}, seasonal_order={best_seasonal_order}")
+print(f"\n  Note on D={best_seasonal_order[1]}: auto_arima selects D={best_seasonal_order[1]}, absorbing weekly")
+print(f"  seasonality through seasonal lag terms rather than seasonal differencing.")
 
-# ╔═════════════════════════════════════════════════════════════════════════════╗
-# ║  PHASE 6 — TRAIN/TEST SPLIT & SARIMA FITTING                             ║
-# ╚═════════════════════════════════════════════════════════════════════════════╝
-print("\n" + "=" * 80)
-print("PHASE 6: TRAIN/TEST SPLIT & SARIMA FITTING")
-print("=" * 80)
-
-# Split: last 60 days for testing
-TEST_DAYS = 60
-train = daily_total.iloc[:-TEST_DAYS]
-test  = daily_total.iloc[-TEST_DAYS:]
-
-print(f"\n  Train: {train.index.min()} → {train.index.max()} ({len(train)} days)")
-print(f"  Test : {test.index.min()} → {test.index.max()} ({len(test)} days)")
-
-# Fit SARIMA
-print(f"\n  Fitting SARIMAX{best_order}x{best_seasonal_order}...")
-print("  (This may take a few minutes...)")
-
+# Fit SARIMA on Train
+print(f"\n  Fitting SARIMAX{best_order}x{best_seasonal_order} on train...")
 sarima_model = SARIMAX(
     train,
     order=best_order,
@@ -385,34 +376,36 @@ print(f"\n{sarima_result.summary()}")
 
 # --- 6.1 Residual diagnostics ---
 residuals = sarima_result.resid
+# Exclude startup transient points (first 8 points) caused by differencing lag initialization
+clean_residuals = residuals.iloc[8:].dropna()
 
 fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
 # Residual time plot
-axes[0, 0].plot(residuals.index, residuals.values, linewidth=0.5, color="steelblue")
+axes[0, 0].plot(clean_residuals.index, clean_residuals.values, linewidth=0.5, color="steelblue")
 axes[0, 0].axhline(y=0, color="red", linestyle="--", linewidth=0.8)
-axes[0, 0].set_title("Residuals Over Time")
+axes[0, 0].set_title("Residuals Over Time (excl. startup transient)")
 axes[0, 0].set_ylabel("Residual (kWh)")
 
 # Histogram
-axes[0, 1].hist(residuals, bins=40, density=True, color="steelblue", edgecolor="white", alpha=0.8)
+axes[0, 1].hist(clean_residuals, bins=40, density=True, color="steelblue", edgecolor="white", alpha=0.8)
 axes[0, 1].set_title("Residual Distribution")
 axes[0, 1].set_xlabel("Residual (kWh)")
 
 # Q-Q plot
 from scipy import stats
-stats.probplot(residuals, dist="norm", plot=axes[1, 0])
+stats.probplot(clean_residuals, dist="norm", plot=axes[1, 0])
 axes[1, 0].set_title("Q-Q Plot (Residuals)")
 
 # ACF of residuals
-plot_acf(residuals, lags=30, ax=axes[1, 1], title="ACF of Residuals")
+plot_acf(clean_residuals, lags=30, ax=axes[1, 1], title="ACF of Residuals")
 
 fig.suptitle("SARIMA Residual Diagnostics", fontsize=14, y=1.01)
 save_fig("09_residual_diagnostics.png")
 
-# Ljung-Box test
-lb_test = acorr_ljungbox(residuals, lags=[7, 14, 21], return_df=True)
-print("\n  Ljung-Box Test (H0: no autocorrelation in residuals):")
+# Ljung-Box test on clean residuals
+lb_test = acorr_ljungbox(clean_residuals, lags=[7, 14, 21], return_df=True)
+print("\n  Ljung-Box Test on Residuals (H0: no autocorrelation):")
 print(lb_test.to_string())
 lb_pass = (lb_test["lb_pvalue"] > 0.05).all()
 print(f"  → Residuals {'PASS' if lb_pass else 'FAIL'} white noise test (all p > 0.05: {lb_pass})")

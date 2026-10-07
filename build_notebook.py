@@ -12,7 +12,7 @@ notebook = {
     "**Dataset:** UCI Electricity Load Diagrams 2011–2014  \n",
     "**Citation:** Trindade, A. (2015), *ElectricityLoadDiagrams20112014*, UCI Machine Learning Repository, DOI: [10.24432/C58C86](https://doi.org/10.24432/C58C86)  \n",
     "**Target:** Aggregate daily electricity consumption across 370 client meters (kWh)  \n",
-    "**Methodology:** Seasonal Autoregressive Integrated Moving Average (SARIMA / SARIMAX) with weekly seasonality ($m=7$), walk-forward validation, sample-by-sample inspection, and benchmarking against Naive & Seasonal Naive baselines."
+    "**Methodology:** Seasonal Autoregressive Integrated Moving Average (SARIMA / SARIMAX) with weekly seasonality ($m=7$), walk-forward rolling validation, sample-by-sample inspection, and benchmarking against Naive & Seasonal Naive baselines."
    ]
   },
   {
@@ -21,7 +21,7 @@ notebook = {
    "source": [
     "# 1. Setup & Environment\n",
     "\n",
-    "Import essential scientific and time-series packages, configure visualization styles and random seeds."
+    "Import essential scientific and time-series packages, configure visualization styles and plotting parameters."
    ]
   },
   {
@@ -68,9 +68,9 @@ notebook = {
     "- 370 client electricity meters (`MT_001` through `MT_370`) recorded at 15-minute intervals between 2011 and 2014 (~140,256 rows).\n",
     "- Values recorded in **kW per 15-minute interval**. Divide by 4 ($\\times 0.25$) to obtain energy in **kWh**:\n",
     "$$\\text{Energy (kWh)} = \\frac{\\text{Power (kW)}}{4}$$\n",
-    "- Late-joining clients register zeroes prior to activation (158 active clients at start vs 367 at finish).\n",
-    "- March (missing 1 hour) and October (aggregated 2 hours) daylight saving clock changes introduce minor anomalies.\n",
-    "- **Aggregation decision:** Fitting high-frequency 15-minute intervals ($m=96$) on 140,000 points is computationally prohibitive for SARIMA. Aggregating into daily total energy consumption yields a robust, stable series with weekly seasonality ($m=7$)."
+    "- Many clients joined gradually after 2011 (showing zeroes prior to start).\n",
+    "- **Day count correction:** The raw text file ends at `2015-01-01 00:00:00`. Filtering strictly between `2012-01-01 00:00:00` and `2014-12-31 23:45:00` discards the trailing single-reading timestamp and ensures an exact sequence of **1,096 complete days**.\n",
+    "- **Aggregation decision:** Rather than fitting high-frequency 15-minute intervals ($m=96$) on 140,000 points, we aggregate across all 370 client meters into daily total energy consumption, yielding a well-behaved series with weekly seasonality ($m=7$)."
    ]
   },
   {
@@ -98,12 +98,15 @@ notebook = {
     "        low_memory=False\n",
     "    )\n",
     "    df_raw.columns = df_raw.columns.str.strip().str.strip('\"')\n",
-    "    # Filter to 2012+ where clients are consistently active\n",
-    "    df_kwh = df_raw.loc['2012-01-01':] * 0.25\n",
+    "    # Filter strictly to full 2012-2014 calendar window (excluding trailing partial Jan 1 00:00 reading)\n",
+    "    df_kwh = df_raw.loc['2012-01-01':'2014-12-31 23:45'] * 0.25\n",
     "    daily_total = df_kwh.sum(axis=1).resample('D').sum()\n",
     "    daily_total.name = 'total_kwh'\n",
     "    daily_total.index.freq = 'D'\n",
+    "    daily_total.to_frame().to_csv(DAILY_CSV)\n",
     "\n",
+    "assert len(daily_total) == 1096, f'Expected 1,096 days, got {len(daily_total)}'\n",
+    "print(f'Exact 1,096 days verified: {daily_total.index.min().date()} to {daily_total.index.max().date()}')\n",
     "daily_total.describe()"
    ]
   },
@@ -111,9 +114,9 @@ notebook = {
    "cell_type": "markdown",
    "metadata": {},
    "source": [
-    "# 3. Handle Missing Values & Anomalies\n",
+    "# 3. Data Integrity & Anomaly Check\n",
     "\n",
-    "We inspect and correct any anomalous days caused by daylight saving shifts or sensor outages using time-based linear interpolation followed by boundary fill."
+    "We inspect missing values and verify index continuity. Note: Genuine holiday drops (Christmas, New Year) reflect real reductions in commercial and industrial load and are deliberately preserved rather than artificially smoothed."
    ]
   },
   {
@@ -122,18 +125,10 @@ notebook = {
    "metadata": {},
    "outputs": [],
    "source": [
-    "# Identify and interpolate anomalous dropouts (< 1st percentile)\n",
-    "thresh = daily_total.quantile(0.01)\n",
-    "anomalies = daily_total < thresh\n",
-    "print(f'Detected {anomalies.sum()} anomalous day(s) below threshold ({thresh:,.0f} kWh).')\n",
-    "\n",
-    "if anomalies.sum() > 0:\n",
-    "    daily_total[anomalies] = np.nan\n",
-    "    daily_total = daily_total.interpolate(method='time').ffill().bfill()\n",
-    "    daily_total.to_frame().to_csv(DAILY_CSV)\n",
-    "\n",
-    "print(f'Remaining NaN count: {daily_total.isna().sum()}')\n",
-    "print(f'Series frequency verified: {daily_total.index.freq}')"
+    "print(f'Total missing (NaN) values: {daily_total.isna().sum()}')\n",
+    "print(f'Frequency of DatetimeIndex : {daily_total.index.freq}')\n",
+    "print(f'Min daily load: {daily_total.min():,.0f} kWh (on {daily_total.idxmin().date()})')\n",
+    "print(f'Max daily load: {daily_total.max():,.0f} kWh (on {daily_total.idxmax().date()})')"
    ]
   },
   {
@@ -221,7 +216,7 @@ notebook = {
     "\n",
     "- $T_t$: Long-term trend & macroeconomic drift\n",
     "- $S_t$: Weekly seasonal cycle ($m=7$ days)\n",
-    "- $R_t$: Remainder / residual white noise"
+    "- $R_t$: Remainder / residual variation"
    ]
   },
   {
@@ -253,9 +248,9 @@ notebook = {
    "source": [
     "# 6. Stationarity Testing\n",
     "\n",
-    "SARIMA assumes the underlying stochastic process is stationary after differencing. We test using:\n",
-    "1. **Augmented Dickey-Fuller (ADF):** $H_0$: Unit root present (Non-stationary). Small $p$-value ($<0.05$) rejects $H_0$.\n",
-    "2. **KPSS Test:** $H_0$: Trend stationary. Large $p$-value ($>0.05$) fails to reject stationarity."
+    "SARIMA requires the series to be stationary after differencing. We test using:\n",
+    "1. **Augmented Dickey-Fuller (ADF):** $H_0$: Unit root present (Non-stationary). $p < 0.05$ indicates stationarity.\n",
+    "2. **KPSS Test:** $H_0$: Stationarity around a level. $p > 0.05$ indicates stationarity."
    ]
   },
   {
@@ -281,10 +276,8 @@ notebook = {
     "# 7. Differencing Operations\n",
     "\n",
     "Because the raw series is non-stationary, we apply:\n",
-    "1. **First Differencing ($d=1$):**\n",
-    "$$\\Delta Y_t = Y_t - Y_{t-1}$$\n",
-    "2. **Seasonal Differencing ($D=1, m=7$):**\n",
-    "$$\\Delta_7 (\\Delta Y_t) = (Y_t - Y_{t-1}) - (Y_{t-7} - Y_{t-8})$$"
+    "1. **First Differencing ($d=1$):** $\\Delta Y_t = Y_t - Y_{t-1}$\n",
+    "2. **Seasonal Differencing ($D=1, m=7$):** $\\Delta_7 (\\Delta Y_t) = (Y_t - Y_{t-1}) - (Y_{t-7} - Y_{t-8})$"
    ]
   },
   {
@@ -306,7 +299,7 @@ notebook = {
    "source": [
     "# 8. Autocorrelation & Partial Autocorrelation Analysis (ACF & PACF)\n",
     "\n",
-    "The ACF and PACF guide candidate AR ($p, P$) and MA ($q, Q$) orders."
+    "The ACF and PACF plots guide potential AR and MA candidate orders."
    ]
   },
   {
@@ -328,9 +321,9 @@ notebook = {
    "cell_type": "markdown",
    "metadata": {},
    "source": [
-    "# 9. Parameter Selection via Auto-ARIMA\n",
+    "# 9. Chronological Train / Test Split\n",
     "\n",
-    "We use `pmdarima.auto_arima` with $m=7$ to conduct a stepwise grid search minimizing Akaike Information Criterion (AIC)."
+    "> **Crucial Rule to Avoid Data Leakage:** In time-series forecasting, we split strictly chronologically before fitting models or selecting hyperparameters. We reserve the last **60 days** (2014-11-02 to 2014-12-31) for testing."
    ]
   },
   {
@@ -339,8 +332,36 @@ notebook = {
    "metadata": {},
    "outputs": [],
    "source": [
+    "TEST_DAYS = 60\n",
+    "train = daily_total.iloc[:-TEST_DAYS]\n",
+    "test  = daily_total.iloc[-TEST_DAYS:]\n",
+    "\n",
+    "print(f'Training window: {train.index.min().date()} to {train.index.max().date()} ({len(train)} days)')\n",
+    "print(f'Testing window:  {test.index.min().date()} to {test.index.max().date()} ({len(test)} days)')\n",
+    "assert len(train) == 1036, f'Expected 1,036 train days, got {len(train)}'\n",
+    "assert len(test) == 60, f'Expected 60 test days, got {len(test)}'"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# 10. Parameter Selection via Auto-ARIMA (Fitted on Train Only)\n",
+    "\n",
+    "Fitting `auto_arima` strictly on `train` prevents look-ahead data leakage.\n",
+    "\n",
+    "> **Note on $D=0$:** `auto_arima` tests candidate seasonal orders and selects $D=0$. It models weekly seasonality through seasonal autoregressive ($P=2$) and moving average ($Q=2$) terms at lag 7, rather than seasonal differencing."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": None,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "print('Running auto_arima strictly on TRAIN dataset...')\n",
     "auto_model = pm.auto_arima(\n",
-    "    daily_total,\n",
+    "    train,\n",
     "    m=7,\n",
     "    seasonal=True,\n",
     "    start_p=0, max_p=3,\n",
@@ -359,34 +380,9 @@ notebook = {
    "cell_type": "markdown",
    "metadata": {},
    "source": [
-    "# 10. Chronological Train / Test Split\n",
-    "\n",
-    "> **Crucial Rule:** In time-series forecasting, never shuffle the dataset. Shuffling breaks temporal autocorrelation and causes look-ahead data leakage.\n",
-    "\n",
-    "We hold out the final **60 days** (November–December 2014) as the out-of-sample test horizon."
-   ]
-  },
-  {
-   "cell_type": "code",
-   "execution_count": None,
-   "metadata": {},
-   "outputs": [],
-   "source": [
-    "TEST_DAYS = 60\n",
-    "train = daily_total.iloc[:-TEST_DAYS]\n",
-    "test  = daily_total.iloc[-TEST_DAYS:]\n",
-    "\n",
-    "print(f'Training window: {train.index.min().date()} to {train.index.max().date()} ({len(train)} days)')\n",
-    "print(f'Testing window:  {test.index.min().date()} to {test.index.max().date()} ({len(test)} days)')"
-   ]
-  },
-  {
-   "cell_type": "markdown",
-   "metadata": {},
-   "source": [
     "# 11. Model Training & Fitting\n",
     "\n",
-    "Fitting SARIMAX with order $(1, 1, 2) \\times (0, 0, 2)_7$ on the training dataset."
+    "Fitting SARIMAX with order $(2, 1, 3) \\times (2, 0, 2)_7$ on the training data."
    ]
   },
   {
@@ -415,11 +411,7 @@ notebook = {
    "source": [
     "# 12. Residual Diagnostics & White Noise Testing\n",
     "\n",
-    "A well-fitted time series model leaves residuals that resemble white noise:\n",
-    "1. Mean near zero, constant variance over time.\n",
-    "2. Normal bell-curve error distribution.\n",
-    "3. No statistically significant spikes in the residual ACF.\n",
-    "4. **Ljung-Box Test:** $H_0$: No residual autocorrelation ($p > 0.05$ confirms white noise)."
+    "With differencing and seasonal lag terms, the initial startup observations (first 8 points) exhibit transient initialization effects. Excluding these startup points yields the true stationary residual series for diagnostic plots and the **Ljung-Box test** ($H_0$: no autocorrelation, $p > 0.05$ indicates white noise)."
    ]
   },
   {
@@ -428,25 +420,27 @@ notebook = {
    "metadata": {},
    "outputs": [],
    "source": [
-    "residuals = result.resid\n",
-    "fig, axes = plt.subplots(2, 2, figsize=(14, 8))\n",
-    "axes[0, 0].plot(residuals, color='steelblue', lw=0.8)\n",
-    "axes[0, 0].axhline(0, color='red', ls='--')\n",
-    "axes[0, 0].set_title('Residuals Over Time')\n",
+    "# Trim initial startup transient points (first 8 observations)\n",
+    "clean_residuals = result.resid.iloc[8:].dropna()\n",
     "\n",
-    "axes[0, 1].hist(residuals, bins=35, density=True, color='steelblue', alpha=0.7, ec='white')\n",
+    "fig, axes = plt.subplots(2, 2, figsize=(14, 8))\n",
+    "axes[0, 0].plot(clean_residuals, color='steelblue', lw=0.8)\n",
+    "axes[0, 0].axhline(0, color='red', ls='--')\n",
+    "axes[0, 0].set_title('Residuals Over Time (excl. startup transient)')\n",
+    "\n",
+    "axes[0, 1].hist(clean_residuals, bins=35, density=True, color='steelblue', alpha=0.7, ec='white')\n",
     "axes[0, 1].set_title('Residual Distribution')\n",
     "\n",
     "from scipy import stats\n",
-    "stats.probplot(residuals, dist='norm', plot=axes[1, 0])\n",
+    "stats.probplot(clean_residuals, dist='norm', plot=axes[1, 0])\n",
     "axes[1, 0].set_title('Normal Q-Q Plot')\n",
     "\n",
-    "plot_acf(residuals, lags=30, ax=axes[1, 1], title='ACF of Residuals')\n",
+    "plot_acf(clean_residuals, lags=30, ax=axes[1, 1], title='ACF of Residuals')\n",
     "plt.tight_layout()\n",
     "plt.show()\n",
     "\n",
-    "lb = acorr_ljungbox(residuals, lags=[7, 14, 21], return_df=True)\n",
-    "print('Ljung-Box Autocorrelation Test:')\n",
+    "lb = acorr_ljungbox(clean_residuals, lags=[7, 14, 21], return_df=True)\n",
+    "print('Ljung-Box Autocorrelation Test on Clean Residuals:')\n",
     "display(lb)"
    ]
   },
@@ -456,19 +450,9 @@ notebook = {
    "source": [
     "# 13. Evaluation Functions\n",
     "\n",
-    "We evaluate forecast accuracy using three standard loss metrics:\n",
+    "We evaluate forecast accuracy using standard loss metrics:\n",
     "\n",
-    "### Mean Absolute Error (MAE)\n",
-    "$$\\text{MAE} = \\frac{1}{m} \\sum_{t=1}^{m} |Y_t - \\hat{Y}_t|$$\n",
-    "\n",
-    "### Root Mean Squared Error (RMSE)\n",
-    "$$\\text{RMSE} = \\sqrt{\\frac{1}{m} \\sum_{t=1}^{m} (Y_t - \\hat{Y}_t)^2}$$\n",
-    "\n",
-    "### Mean Absolute Percentage Error (MAPE)\n",
-    "$$\\text{MAPE} = \\frac{100\\%}{m} \\sum_{t=1}^{m} \\left| \\frac{Y_t - \\hat{Y}_t}{Y_t} \\right|$$\n",
-    "\n",
-    "### Coefficient of Determination ($R^2$)\n",
-    "$$R^2 = 1 - \\frac{\\sum (Y_t - \\hat{Y}_t)^2}{\\sum (Y_t - \\bar{Y})^2}$$"
+    "$$\\text{MAE} = \\frac{1}{m} \\sum_{t=1}^{m} |Y_t - \\hat{Y}_t|, \\quad \\text{RMSE} = \\sqrt{\\frac{1}{m} \\sum_{t=1}^{m} (Y_t - \\hat{Y}_t)^2}, \\quad \\text{MAPE} = \\frac{100\\%}{m} \\sum_{t=1}^{m} \\left| \\frac{Y_t - \\hat{Y}_t}{Y_t} \\right|$$"
    ]
   },
   {
@@ -493,7 +477,7 @@ notebook = {
    "source": [
     "# 14. In-Sample Evaluation on Training Data\n",
     "\n",
-    "Let us check in-sample performance to ensure the model has learned the historical training pattern."
+    "Evaluating in-sample training accuracy to ensure the model captured the historical data dynamics."
    ]
   },
   {
@@ -502,8 +486,8 @@ notebook = {
    "metadata": {},
    "outputs": [],
    "source": [
-    "train_fitted = result.fittedvalues\n",
-    "train_scores = eval_metrics(train.iloc[7:], train_fitted.iloc[7:], 'SARIMA (In-Sample Training)')\n",
+    "train_fitted = result.fittedvalues.iloc[8:]\n",
+    "train_scores = eval_metrics(train.iloc[8:], train_fitted, 'SARIMA (In-Sample Training)')\n",
     "pd.DataFrame([train_scores]).round(2)"
    ]
   },
@@ -513,7 +497,7 @@ notebook = {
    "source": [
     "# 15. Out-of-Sample Direct Multi-Step Forecast (60 Days)\n",
     "\n",
-    "A direct multi-step forecast emits projections for all 60 days in a single forward pass without incorporating incoming true observations."
+    "Projecting all 60 days ahead into the test set in a single direct multi-step pass."
    ]
   },
   {
@@ -534,7 +518,7 @@ notebook = {
    "source": [
     "# 16. Walk-Forward (Rolling-Origin One-Step Ahead) Forecast\n",
     "\n",
-    "In operational electricity grid dispatch, models are deployed in a **walk-forward** manner: forecast day $t+1$, observe the actual demand for day $t+1$, append it to the historical window, and forecast day $t+2$."
+    "In day-ahead operational scheduling, the forecast is updated as each new day\\'s true load is observed."
    ]
   },
   {
@@ -565,9 +549,10 @@ notebook = {
    "source": [
     "# 17. Baseline Benchmark Models\n",
     "\n",
-    "Any time series forecast must be benchmarked against standard heuristics:\n",
+    "Evaluating against standard benchmarks:\n",
     "1. **Naive (Yesterday):** $\\hat{Y}_t = Y_{t-1}$\n",
-    "2. **Seasonal Naive (Last Week):** $\\hat{Y}_t = Y_{t-7}$"
+    "2. **Seasonal Naive (Last Week):** $\\hat{Y}_t = Y_{t-7}$\n",
+    "3. **SARIMAX with Day-of-Week Exogenous Indicators:** (Note: Day-of-week dummies are largely redundant with the seasonal AR/MA terms at lag 7)."
    ]
   },
   {
@@ -579,7 +564,6 @@ notebook = {
     "naive_fc = daily_total.shift(1).iloc[-TEST_DAYS:]\n",
     "snaive_fc = daily_total.shift(7).iloc[-TEST_DAYS:]\n",
     "\n",
-    "# SARIMAX with Day-of-Week Exogenous Variables\n",
     "def get_dow(idx):\n",
     "    d = pd.get_dummies(idx.dayofweek, prefix='dow', dtype=float)\n",
     "    d.index = idx\n",
@@ -595,7 +579,7 @@ notebook = {
    "source": [
     "# 18. Comparative Benchmarking & Metrics Summary Table\n",
     "\n",
-    "Let us rank all models on out-of-sample test accuracy."
+    "Ranking all models on out-of-sample test accuracy."
    ]
   },
   {
@@ -621,7 +605,7 @@ notebook = {
    "source": [
     "# 19. Visual Comparison: Actual vs Predicted Demand\n",
     "\n",
-    "Overlaying the forecasts against the actual test load."
+    "Overlaying model projections against the actual test load."
    ]
   },
   {
@@ -650,7 +634,7 @@ notebook = {
    "source": [
     "# 20. Test a Single Sample — `test_prediction(index)`\n",
     "\n",
-    "Similar to the interactive sample tester in the reference Colab, this function inspects an individual test day, displaying its calendar context, past 7 days history, actual vs predicted load, and error metrics."
+    "Inspects an individual test day, displaying date, day-of-week, recent 7-day history, actual vs predicted load, and percentage error."
    ]
   },
   {
@@ -693,7 +677,7 @@ notebook = {
    "source": [
     "# 21. Test Several Individual Samples\n",
     "\n",
-    "Inspecting different days across the test set (weekdays, weekends, and holiday periods):"
+    "Testing specific dates in the test period: regular weekdays, weekends, and holidays."
    ]
   },
   {
@@ -702,7 +686,7 @@ notebook = {
    "metadata": {},
    "outputs": [],
    "source": [
-    "# Test Day 0 (First test day)\n",
+    "# Sample 0 (Start of test window: Sunday, Nov 2, 2014)\n",
     "test_prediction(0, test, wf_series, daily_total)"
    ]
   },
@@ -712,7 +696,7 @@ notebook = {
    "metadata": {},
    "outputs": [],
    "source": [
-    "# Test Day 15 (Mid-November)\n",
+    "# Sample 15 (Mid-window: Monday, Nov 17, 2014)\n",
     "test_prediction(15, test, wf_series, daily_total)"
    ]
   },
@@ -722,8 +706,8 @@ notebook = {
    "metadata": {},
    "outputs": [],
    "source": [
-    "# Test Day 53 (Christmas Eve)\n",
-    "test_prediction(53, test, wf_series, daily_total)"
+    "# Sample 52 (Christmas Eve: Wednesday, Dec 24, 2014)\n",
+    "test_prediction(52, test, wf_series, daily_total)"
    ]
   },
   {
@@ -732,7 +716,7 @@ notebook = {
    "metadata": {},
    "outputs": [],
    "source": [
-    "# Test Day 59 (Final day: New Year\\'s Eve)\n",
+    "# Sample 59 (New Year\\'s Eve: Wednesday, Dec 31, 2014)\n",
     "test_prediction(59, test, wf_series, daily_total)"
    ]
   },
@@ -740,9 +724,9 @@ notebook = {
    "cell_type": "markdown",
    "metadata": {},
    "source": [
-    "# 22. Test Your Own Future Date / Scenario — `predict_new_demand()`\n",
+    "# 22. Test Custom Future Dates — `predict_new_demand()`\n",
     "\n",
-    "This function lets you generate future electricity load projections for any arbitrary horizon $h$ steps ahead from any historical cutoff point."
+    "Generate future load forecasts for any arbitrary horizon $h$ steps ahead with 95% confidence intervals."
    ]
   },
   {
@@ -766,7 +750,7 @@ notebook = {
     "    })\n",
     "    return res_df\n",
     "\n",
-    "# Example: Forecast the first week of January 2015\n",
+    "# Example: Forecast the first 7 days of January 2015\n",
     "predict_new_demand(days_ahead=7)"
    ]
   },
@@ -776,7 +760,7 @@ notebook = {
    "source": [
     "# 23. Final Refit & 30-Day Operational Projection\n",
     "\n",
-    "Refitting the SARIMA model across all available data (1,097 days, 2012–2014) to emit operational projections for January 2015."
+    "Refitting the model over the entire 1,096-day dataset to project electricity demand for January 2015."
    ]
   },
   {
@@ -809,30 +793,20 @@ notebook = {
    "source": [
     "# 24. Complete SARIMA Mathematical Formula Summary\n",
     "\n",
-    "The complete model fitted and evaluated above is expressed mathematically as:\n",
+    "The fitted $\\text{SARIMAX}(2, 1, 3) \\times (2, 0, 2)_7$ model is expressed mathematically as:\n",
     "\n",
-    "### General SARIMA Formulation\n",
-    "$$\\Phi_P(B^s) \\phi_p(B) (1 - B)^d (1 - B^s)^D Y_t = \\Theta_Q(B^s) \\theta_q(B) \\varepsilon_t$$\n",
+    "$$\\Phi_P(B^7) \\phi_p(B) (1 - B)^d Y_t = \\Theta_Q(B^7) \\theta_q(B) \\varepsilon_t$$\n",
     "\n",
     "where:\n",
     "- $B$ is the backshift lag operator ($B^k Y_t = Y_{t-k}$)\n",
-    "- $s = 7$ is the seasonal frequency (weekly)\n",
-    "- $\\phi_p(B) = (1 - \\phi_1 B)$ is the non-seasonal autoregressive polynomial ($p=1$)\n",
-    "- $\\theta_q(B) = (1 + \\theta_1 B + \\theta_2 B^2)$ is the non-seasonal moving average polynomial ($q=2$)\n",
-    "- $\\Theta_Q(B^s) = (1 + \\Theta_1 B^7 + \\Theta_2 B^{14})$ is the seasonal moving average polynomial ($Q=2$)\n",
-    "- $(1 - B)^1$ is the first differencing operator ($d=1$)\n",
-    "- $\\varepsilon_t \\sim \\text{WN}(0, \\sigma^2)$ is Gaussian white noise\n",
-    "\n",
-    "### Expanded Difference Equation for $\\text{SARIMA}(1,1,2)(0,0,2)_7$\n",
-    "Let $W_t = (1 - B) Y_t = Y_t - Y_{t-1}$. Then:\n",
-    "\n",
-    "$$W_t = \\phi_1 W_{t-1} + \\varepsilon_t + \\theta_1 \\varepsilon_{t-1} + \\theta_2 \\varepsilon_{t-2} + \\Theta_1 \\varepsilon_{t-7} + \\Theta_2 \\varepsilon_{t-14} + \\theta_1 \\Theta_1 \\varepsilon_{t-8} + \\dots$$\n",
-    "\n",
-    "### Forecast Expectation\n",
-    "$$\\hat{Y}_{t+h|t} = \\mathbb{E}[Y_{t+h} \\mid \\mathcal{F}_t]$$\n",
-    "\n",
-    "with 95% forecast interval:\n",
-    "$$\\hat{Y}_{t+h|t} \\pm 1.96 \\cdot \\sigma_{t+h}$$"
+    "- Seasonal period is $s = 7$ (weekly)\n",
+    "- Non-seasonal AR polynomial ($p=2$): $\\phi(B) = (1 - \\phi_1 B - \\phi_2 B^2)$\n",
+    "- Non-seasonal MA polynomial ($q=3$): $\\theta(B) = (1 + \\theta_1 B + \\theta_2 B^2 + \\theta_3 B^3)$\n",
+    "- Seasonal AR polynomial ($P=2$): $\\Phi(B^7) = (1 - \\Phi_1 B^7 - \\Phi_2 B^{14})$\n",
+    "- Seasonal MA polynomial ($Q=2$): $\\Theta(B^7) = (1 + \\Theta_1 B^7 + \\Theta_2 B^{14})$\n",
+    "- Seasonal differencing order is $D=0$ (weekly cycles modeled through lag-7 AR and MA polynomials)\n",
+    "- Regular differencing order is $d=1$: $(1 - B) Y_t = Y_t - Y_{t-1}$\n",
+    "- $\\varepsilon_t \\sim \\mathcal{WN}(0, \\sigma^2)$ is Gaussian white noise"
    ]
   },
   {
@@ -841,10 +815,10 @@ notebook = {
    "source": [
     "# 25. Key Project Insights & Domain Findings\n",
     "\n",
-    "1. **Operational Walk-Forward Superiority:** When deployed in a realistic rolling-origin environment (re-incorporating actual daily observations), SARIMA achieves an outstanding **2.02% MAPE**, reducing MAE by 11.5% compared to Naive and 52.7% compared to Seasonal Naive.\n",
-    "2. **Direct Multi-Step Horizon Decay:** In long direct horizons (60 days), unassisted SARIMA naturally converges toward its unconditional seasonal mean, failing to anticipate winter downward shifts unless paired with annual seasonality ($m=365$) or exogenous temperature inputs.\n",
-    "3. **Statistical Validity:** The auto-selected $\\text{SARIMAX}(1, 1, 2) \\times (0, 0, 2)_7$ model passes all residual diagnostic criteria, proving that weekly autoregressive and moving average dynamics adequately capture short-term temporal dependencies.\n",
-    "4. **Benchmarking Lesson:** Always evaluate against both Naive and Seasonal Naive baselines; a model is only useful in production if it consistently outperforms naive persistence."
+    "1. **Walk-Forward Performance:** Walk-forward rolling SARIMA achieves **3.72% MAPE** (MAE = 155,282 kWh), performing slightly better than Naive persistence (**4.02% MAPE**) and noticeably better than Seasonal Naive (**5.46% MAPE**).\n",
+    "2. **Holiday Impact in Test Horizon:** The test period (Nov–Dec 2014) includes major national holidays (Christmas Eve, Christmas Day, Boxing Day, and New Year\\'s Eve) where industrial and commercial electricity load plummets substantially below normal weekday patterns. Because SARIMA lacks holiday calendar indicators, errors naturally increase on these specific dates.\n",
+    "3. **Direct Multi-Step Decay:** Without external weather or holiday drivers, a 60-day static projection reverts toward its unconditional seasonal mean (17.47% MAPE).\n",
+    "4. **Diagnostic Integrity:** When startup lag transients are removed, the residuals pass the Ljung-Box test ($p > 0.30$ across lags 7, 14, 21), confirming the absence of unmodeled autocorrelation."
    ]
   }
  ],

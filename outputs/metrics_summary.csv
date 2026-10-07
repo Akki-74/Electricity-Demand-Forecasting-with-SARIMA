@@ -1,6 +1,6 @@
 Model,MAE,RMSE,MAPE (%)
-SARIMA (60-day direct),550745.35,578984.22,11.67
-SARIMA (walk-forward 1-step),94542.08,150430.7,2.02
-SARIMAX + day-of-week (direct),618639.95,642702.88,13.08
-Naive (yesterday),106806.39,163336.75,2.28
-Seasonal Naive (last week),199864.65,285879.56,4.19
+SARIMA (60-day direct),794288.43,855267.8,17.47
+SARIMA (walk-forward 1-step),155281.86,358172.23,3.72
+SARIMAX + day-of-week (direct),810658.87,873136.14,17.83
+Naive (yesterday),168559.88,374921.17,4.02
+Seasonal Naive (last week),233444.63,398102.73,5.46
