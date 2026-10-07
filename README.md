@@ -289,7 +289,7 @@ TIME-SERIES-FORECASTING-FOR-ELECTRICITY/
 
 ### 2. Clone Repository
 ```bash
-git clone https://github.com/your-username/TIME-SERIES-FORECASTING-FOR-ELECTRICITY.git
+git clone https://github.com/Akki-74/TIME-SERIES-FORECASTING-FOR-ELECTRICITY.git
 cd TIME-SERIES-FORECASTING-FOR-ELECTRICITY
 ```
 
