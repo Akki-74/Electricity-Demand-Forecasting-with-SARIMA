@@ -289,8 +289,8 @@ TIME-SERIES-FORECASTING-FOR-ELECTRICITY/
 
 ### 2. Clone Repository
 ```bash
-git clone https://github.com/Akki-74/TIME-SERIES-FORECASTING-FOR-ELECTRICITY.git
-cd TIME-SERIES-FORECASTING-FOR-ELECTRICITY
+git clone https://github.com/Akki-74/Electricity-Demand-Forecasting-with-SARIMA.git
+cd Electricity-Demand-Forecasting-with-SARIMA
 ```
 
 ### 3. Create & Activate Virtual Environment
