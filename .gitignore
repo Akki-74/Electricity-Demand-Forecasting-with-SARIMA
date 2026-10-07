@@ -34,6 +34,7 @@ LD2011_2014.txt
 # ==============================================================================
 .ipynb_checkpoints/
 */.ipynb_checkpoints/*
+.jupyter/
 
 # ==============================================================================
 # Distribution / Packaging / Build Artifacts
@@ -57,7 +58,7 @@ share/python-wheels/
 MANIFEST
 
 # ==============================================================================
-# Unit test / Coverage reports
+# Unit test / Coverage reports / Linter Caches
 # ==============================================================================
 htmlcov/
 .tox/
@@ -71,6 +72,8 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 cover/
 
 # ==============================================================================
@@ -95,13 +98,15 @@ cover/
 ehthumbs.db
 Thumbs.db
 desktop.ini
+*.dmp
 
 # ==============================================================================
-# Logs, Temp & Scratch files
+# Logs, Temp, Scratch & Helper execution files
 # ==============================================================================
 *.log
 scratch/
 tmp/
 temp/
+execute_notebook.py
 colab_download.json
 _unicode_lines.txt

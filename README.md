@@ -198,19 +198,19 @@ Test Sample Index : 0
 Target Date       : 2014-11-02 (Sunday)
 ------------------------------------------
 Recent 7-Day History (kWh):
-  Sun 2014-10-26:  5,584,210 kWh
-  Mon 2014-10-27:  5,920,345 kWh
-  Tue 2014-10-28:  5,984,120 kWh
-  Wed 2014-10-29:  5,892,440 kWh
-  Thu 2014-10-30:  5,910,230 kWh
-  Fri 2014-10-31:  5,845,670 kWh
-  Sat 2014-11-01:  5,541,890 kWh
+  Sun 2014-10-26:  5,545,457 kWh
+  Mon 2014-10-27:  5,459,200 kWh
+  Tue 2014-10-28:  5,507,208 kWh
+  Wed 2014-10-29:  5,570,418 kWh
+  Thu 2014-10-30:  5,549,727 kWh
+  Fri 2014-10-31:  5,579,344 kWh
+  Sat 2014-11-01:  5,596,858 kWh
 ------------------------------------------
-Actual Consumption   :  5,178,450 kWh
-Predicted Consumption:  5,142,300 kWh
-Absolute Error       :     36,150 kWh
-Percentage Error     :       0.70 %
-Verdict              : EXCELLENT (< 3%)
+Actual Consumption   :  5,194,131 kWh
+Predicted Consumption:  5,516,977 kWh
+Absolute Error       :    322,846 kWh
+Percentage Error     :      6.22 %
+Verdict              : ACCEPTABLE
 ==========================================
 ```
 
